@@ -163,7 +163,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("newest_gene_loss_over_length_TM.png"),
+        default=Path("loss_over_length_TM.png"),
         help="Output image path for the plot.",
     )
     args = parser.parse_args()
