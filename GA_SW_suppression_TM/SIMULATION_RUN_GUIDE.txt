@@ -1,0 +1,28 @@
+Simulation Setup and Run Instructions (WSL + Meep)
+
+1. Install WSL and Ubuntu
+- On Windows, install Windows Subsystem for Linux (WSL).
+- Install an Ubuntu distribution from the Microsoft Store.
+
+2. Set up a Conda environment for pymeep inside Ubuntu
+- Follow the official Meep installation guide:
+  https://meep.readthedocs.io/en/master/Installation/
+- Create and activate a Conda environment with pymeep.
+
+3. Place the project folder in your Linux home directory
+- Move/copy this project to a Linux path, for example:
+  /home/your_user_name/projects/meep_project
+
+4. Open the project from Windows IDE using WSL interpreter
+- Use PyCharm or VS Code on Windows.
+- Configure the Python interpreter to the WSL Conda environment created in Step 2.
+
+5. Run simulations for the assigned length range
+- Run the corresponding script(s), e.g. SW_GA_TM_xx.py for lengths in your assigned range (for example, 5.0 mm to 9.0 mm).
+- If the loss function does not improve for more than 5 generations, you can stop the run early.
+
+6. Force-stop stuck runs when needed
+- Sometimes PyCharm cannot terminate Python processes running in WSL.
+- In a WSL terminal, run:
+  pkill -f python
+- This force-terminates Python processes. Use with care if multiple jobs are running.
