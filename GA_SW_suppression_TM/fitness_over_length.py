@@ -26,12 +26,7 @@ def parse_csv_data(csv_path: Path):
                     best_fitness = float(value)
                 except ValueError:
                     best_fitness = None
-            elif key == "Best Loss":
-                try:
-                    legacy_loss = float(value)
-                    best_fitness = 1.5 - legacy_loss
-                except ValueError:
-                    best_fitness = None
+
             elif key == "Genome":
                 try:
                     genome = ast.literal_eval(value)
