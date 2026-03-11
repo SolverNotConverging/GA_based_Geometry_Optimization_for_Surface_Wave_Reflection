@@ -1,4 +1,3 @@
-import ast
 import csv
 import os
 import re
@@ -31,6 +30,12 @@ OUTPUT_DIR = 'optimization_results_7_8mm'
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(CURRENT_DIR, OUTPUT_DIR)
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+# Edit this list directly in PyCharm.
+# Examples:
+# USER_GENOMES = [[1, 3, 3]]
+# USER_GENOMES = [[1, 3, 3], [3, 1, 3]]
+USER_GENOMES = []
 
 
 # =======================================================================
@@ -105,8 +110,12 @@ def save_generation_results(gen_num, fitness, genome, T, R, L, flux_freqs):
 
 
 def validate_genome(genome):
+    if not isinstance(genome, list):
+        raise ValueError(f"Genome must be a list, got {type(genome).__name__}")
     if len(genome) != NUM_SEGMENTS:
         raise ValueError(f"Genome length must be {NUM_SEGMENTS}, got {len(genome)}")
+    if any(not isinstance(gene, int) for gene in genome):
+        raise ValueError("Each gene must be an integer")
     if any(gene not in [0, 1, 2, 3] for gene in genome):
         raise ValueError("Each gene must be one of 0, 1, 2, 3")
     if genome[0] == 0 or genome[-1] == 0:
@@ -114,24 +123,16 @@ def validate_genome(genome):
     return genome
 
 
-def parse_user_genomes(raw_text):
-    raw_text = raw_text.strip()
-    if not raw_text:
-        return []
+def get_user_genomes():
+    if not isinstance(USER_GENOMES, list):
+        raise ValueError("USER_GENOMES must be a list")
+    if not USER_GENOMES:
+        raise ValueError("USER_GENOMES is empty. Add at least one genome before running.")
 
-    parsed = ast.literal_eval(raw_text)
-    if not isinstance(parsed, list):
-        raise ValueError("Input must be a list")
-
-    if parsed and all(isinstance(value, int) for value in parsed):
-        return [validate_genome(list(parsed))]
-
-    genomes = []
-    for item in parsed:
-        if not isinstance(item, (list, tuple)):
-            raise ValueError("Input must be a genome like [1, 3, 3] or a list of genomes")
-        genomes.append(validate_genome([int(value) for value in item]))
-    return genomes
+    validated_genomes = []
+    for genome in USER_GENOMES:
+        validated_genomes.append(validate_genome(genome))
+    return validated_genomes
 
 
 # =======================================================================
@@ -255,14 +256,10 @@ def calculate_fitness(genome):
 # 6. CUSTOM GENE EVALUATION
 # =======================================================================
 
+genomes = get_user_genomes()
 print(f"Target length: {OPT_X_END} mm")
 print(f"Expected genome length: {NUM_SEGMENTS}")
-print("Enter one genome like [1, 3, 3] or a list of genomes like [[1, 3, 3], [3, 1, 3]]")
-raw_text = input("Genes to evaluate: ")
-
-genomes = parse_user_genomes(raw_text)
-if not genomes:
-    raise SystemExit("No genomes provided.")
+print(f"User genomes: {genomes}")
 
 stored_best_fitness, stored_best_genome, last_saved_generation = load_best_record(RESULTS_DIR)
 if stored_best_fitness == -float('inf'):
