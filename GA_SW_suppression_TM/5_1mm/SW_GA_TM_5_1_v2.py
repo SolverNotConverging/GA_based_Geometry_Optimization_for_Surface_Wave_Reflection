@@ -105,53 +105,120 @@ def load_best_record(results_dir):
     return best_fitness, best_genome, max_generation
 
 
-def find_previous_results_dir():
-    previous_length = round(OPT_X_END - MIN_FEATURE_SIZE, 10)
-    previous_dir = os.path.join(os.path.dirname(CURRENT_DIR), format_length_dir(previous_length))
-    if not os.path.isdir(previous_dir):
+def find_results_dir_for_length(length_mm):
+    length_dir = os.path.join(os.path.dirname(CURRENT_DIR), format_length_dir(length_mm))
+    if not os.path.isdir(length_dir):
         return None
 
     candidate_dirs = []
-    for name in os.listdir(previous_dir):
-        full_path = os.path.join(previous_dir, name)
+    for name in os.listdir(length_dir):
+        full_path = os.path.join(length_dir, name)
         if os.path.isdir(full_path) and name.startswith("optimization_results_"):
             candidate_dirs.append(full_path)
 
-    if candidate_dirs:
-        candidate_dirs.sort()
-        return candidate_dirs[0]
+    if not candidate_dirs:
+        return None
 
-    return None
+    candidate_dirs.sort()
+    return candidate_dirs[0]
 
 
-def create_seed_population_from_previous_best():
-    previous_results_dir = find_previous_results_dir()
-    if previous_results_dir is None:
-        print("  -> Previous length results directory not found. Using random initialization.")
-        return []
+def sanitize_genome(genome):
+    sanitized = genome[:NUM_SEGMENTS]
+    if len(sanitized) < NUM_SEGMENTS:
+        sanitized.extend([1] * (NUM_SEGMENTS - len(sanitized)))
+    if sanitized:
+        if sanitized[0] == 0:
+            sanitized[0] = random.choice([1, 2, 3])
+        if sanitized[-1] == 0:
+            sanitized[-1] = random.choice([1, 2, 3])
+    return sanitized
 
-    previous_best_fitness, previous_best_genome, _ = load_best_record(previous_results_dir)
-    if previous_best_genome is None:
-        print("  -> Previous length best genome not found. Using random initialization.")
-        return []
 
-    expected_previous_segments = NUM_SEGMENTS - 1
-    if len(previous_best_genome) != expected_previous_segments:
-        print(
-            "  -> Previous best genome length mismatch "
-            f"(expected {expected_previous_segments}, got {len(previous_best_genome)}). "
-            "Using random initialization."
-        )
-        return []
+def build_previous_length_seeds(previous_best_genome):
+    seeds = []
+    if previous_best_genome is None or len(previous_best_genome) != NUM_SEGMENTS - 1:
+        return seeds
 
-    seed_population = []
     for gene in [1, 2, 3]:
-        seed_population.append(previous_best_genome + [gene])
+        seeds.append(sanitize_genome(previous_best_genome + [gene]))
+    return seeds
 
-    print(
-        f"  -> Seeded {len(seed_population)} genomes from previous best "
-        f"{previous_best_genome} (fitness: {previous_best_fitness:.6f})."
-    )
+
+def build_current_length_seed(current_best_genome):
+    if current_best_genome is None or len(current_best_genome) != NUM_SEGMENTS:
+        return []
+    return [sanitize_genome(current_best_genome)]
+
+
+def build_next_length_seed(next_best_genome):
+    if next_best_genome is None or len(next_best_genome) != NUM_SEGMENTS + 1:
+        return []
+    return [sanitize_genome(next_best_genome[:-1])]
+
+
+def unique_genomes(genomes):
+    unique = []
+    seen = set()
+    for genome in genomes:
+        key = tuple(genome)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(genome)
+    return unique
+
+
+def get_v1_seed_genomes():
+    half_segments = (NUM_SEGMENTS + 1) // 2
+    seed_gene_1 = sanitize_genome([2] * half_segments + [1] * (NUM_SEGMENTS - half_segments))
+    seed_gene_2 = sanitize_genome([1] * half_segments + [2] * (NUM_SEGMENTS - half_segments))
+    return [seed_gene_1, seed_gene_2]
+
+
+def create_v3_seed_population():
+    seed_population = []
+    current_length = round(OPT_X_END, 10)
+    previous_length = round(current_length - MIN_FEATURE_SIZE, 10)
+    next_length = round(current_length + MIN_FEATURE_SIZE, 10)
+
+    previous_results_dir = find_results_dir_for_length(previous_length)
+    current_results_dir = RESULTS_DIR
+    next_results_dir = find_results_dir_for_length(next_length)
+
+    previous_best_fitness, previous_best_genome, _ = load_best_record(previous_results_dir) if previous_results_dir else (-float('inf'), None, 0)
+    current_best_fitness, current_best_genome, _ = load_best_record(current_results_dir)
+    next_best_fitness, next_best_genome, _ = load_best_record(next_results_dir) if next_results_dir else (-float('inf'), None, 0)
+
+    current_seeds = build_current_length_seed(current_best_genome)
+    previous_seeds = build_previous_length_seeds(previous_best_genome)
+    next_seeds = build_next_length_seed(next_best_genome)
+    v1_seeds = get_v1_seed_genomes()
+
+    seed_population.extend(current_seeds)
+    seed_population.extend(previous_seeds)
+    seed_population.extend(next_seeds)
+    seed_population.extend(v1_seeds)
+    seed_population = unique_genomes(seed_population)
+
+    if current_best_genome is not None:
+        print(f"  -> Added current-length best seed {current_best_genome} (fitness: {current_best_fitness:.6f})")
+    else:
+        print("  -> No current-length stored best genome found.")
+
+    if previous_seeds:
+        print(f"  -> Added {len(previous_seeds)} previous-length seeds from {previous_best_genome} (fitness: {previous_best_fitness:.6f})")
+    else:
+        print("  -> No valid previous-length seed genomes found.")
+
+    if next_seeds:
+        print(f"  -> Added next-length trimmed seed from {next_best_genome} (fitness: {next_best_fitness:.6f})")
+    else:
+        print("  -> No valid next-length seed genome found.")
+
+    print(f"  -> Added {len(v1_seeds)} v1 structured seeds.")
+    print(f"  -> Total unique seeded genomes: {len(seed_population)}")
+
     return seed_population
 
 
@@ -356,7 +423,7 @@ def save_generation_results(gen_num, fitness, genome, T, R, L):
     print(f"  -> Exported: {filename}")
 
 
-print(f"--- Starting Optimization V2 ({GENERATIONS} Gens) ---")
+print(f"--- Starting Optimization V3 ({GENERATIONS} Gens) ---")
 
 stored_best_fitness, _, last_saved_generation = load_best_record(RESULTS_DIR)
 if stored_best_fitness == -float('inf'):
@@ -364,9 +431,10 @@ if stored_best_fitness == -float('inf'):
 else:
     print(f"  -> Stored best fitness for this length: {stored_best_fitness:.6f}")
 
-population = create_seed_population_from_previous_best()
+population = create_v3_seed_population()
 while len(population) < POPULATION_SIZE:
     population.append(create_random_genome())
+population = population[:POPULATION_SIZE]
 
 history_fitness = []
 next_saved_generation = last_saved_generation
