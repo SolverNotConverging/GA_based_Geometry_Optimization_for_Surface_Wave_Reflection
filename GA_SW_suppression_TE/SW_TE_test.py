@@ -9,7 +9,7 @@ resolution = 20
 cell = mp.Vector3(30, 12, 0)
 pml_layers = [mp.PML(1.0)]
 
-fcen = 0.1
+fcen = 0.08
 df = 0.05
 nfreq = 100
 

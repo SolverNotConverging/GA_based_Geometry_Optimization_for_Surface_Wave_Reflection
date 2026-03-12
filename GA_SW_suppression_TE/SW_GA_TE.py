@@ -21,7 +21,7 @@ H_SUB = 1.27
 T_PEC = 0.035
 
 # Source / Frequency
-FCEN = 0.1
+FCEN = 0.08
 DF = 0.05
 NFREQ = 100
 
