@@ -57,7 +57,7 @@ def discover_length_directories(base_dir: Path):
     return dirs
 
 
-def find_newest_csv_in_length_dir(folder: Path):
+def find_best_csv_in_length_dir(folder: Path):
     if not folder.exists() or not folder.is_dir():
         return None
 
@@ -74,39 +74,45 @@ def find_newest_csv_in_length_dir(folder: Path):
 
     ranked = []
     for path in csv_candidates:
+        best_fitness, _ = parse_csv_data(path)
+        if best_fitness is None:
+            continue
         match = CSV_NAME_PATTERN.search(path.name)
         generation_from_name = int(match.group(1)) if match else -1
-        ranked.append((generation_from_name, path.stat().st_mtime, path))
+        ranked.append((best_fitness, generation_from_name, path.stat().st_mtime, path))
 
-    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return ranked[0][2]
+    if not ranked:
+        return None
+
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return ranked[0][3]
 
 
-def collect_newest_data(length_dirs):
+def collect_best_data(length_dirs):
     results = []
 
     for length_mm, folder in length_dirs:
-        newest_csv = find_newest_csv_in_length_dir(folder)
-        if newest_csv is None:
+        best_csv = find_best_csv_in_length_dir(folder)
+        if best_csv is None:
             print(f"[SKIP] {length_mm}mm: no CSV found")
             continue
 
-        best_fitness, genome = parse_csv_data(newest_csv)
+        best_fitness, genome = parse_csv_data(best_csv)
         if best_fitness is None:
-            print(f"[SKIP] {length_mm}mm: missing Best Fitness/Best Loss in {newest_csv}")
+            print(f"[SKIP] {length_mm}mm: missing Best Fitness/Best Loss in {best_csv}")
             continue
 
         results.append(
             {
                 "length_mm": length_mm,
-                "csv_path": newest_csv,
+                "csv_path": best_csv,
                 "best_fitness": best_fitness,
                 "genome": genome,
             }
         )
 
         print(
-            f"[OK] {length_mm}mm -> {newest_csv.name}, "
+            f"[OK] {length_mm}mm -> {best_csv.name}, "
             f"best_fitness={best_fitness:.6f}, genome={genome}"
         )
 
@@ -140,7 +146,7 @@ def plot_fitness_over_length(results, output_path: Path):
             fontsize=8,
         )
 
-    plt.title("Newest Gene Best Fitness vs Length (TM)")
+    plt.title("Best Fitness vs Length (TM)")
     plt.xlabel("Length (mm)")
     plt.ylabel("Best Fitness")
     plt.grid(True, alpha=0.3)
@@ -153,7 +159,7 @@ def plot_fitness_over_length(results, output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Find newest gene CSV for all length folders and plot Best Fitness vs length."
+        description="Find the best gene CSV for all length folders and plot Best Fitness vs length."
     )
     parser.add_argument(
         "--base-dir",
@@ -174,7 +180,7 @@ def main():
         print(f"No length directories found in: {args.base_dir}")
         return
 
-    results = collect_newest_data(length_dirs)
+    results = collect_best_data(length_dirs)
     plot_fitness_over_length(results, args.output)
 
 

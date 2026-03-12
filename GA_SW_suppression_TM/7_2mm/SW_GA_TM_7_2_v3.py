@@ -346,7 +346,7 @@ def calculate_fitness(genome):
     R = np.clip(R, 0, 1)
     L = 1 - T - R
 
-    fitness = np.mean(R) + np.min(R)
+    fitness = np.mean(R)
 
     return fitness, T, R, L
 

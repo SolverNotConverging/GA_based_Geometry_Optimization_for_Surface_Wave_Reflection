@@ -175,8 +175,8 @@ def calculate_fitness(genome):
     R = np.clip(R, 0, 1)
     L = 1 - T - R
 
-    # Fitness Function: maximize reflection
-    fitness = np.mean(R) + np.min(R)
+    # Fitness Function: maximize mean reflection
+    fitness = np.mean(R)
 
     return fitness, T, R, L
 

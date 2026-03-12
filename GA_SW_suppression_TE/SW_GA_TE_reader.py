@@ -1,115 +1,164 @@
+import ast
+import csv
+import re
+from pathlib import Path
+
 import meep as mp
 import numpy as np
-import matplotlib.pyplot as plt
-import csv
-import ast  # Safer way to parse string lists "[1, 0, ...]"
 
-# =======================================================================
-# 1. CONFIGURATION
-# =======================================================================
 
-# ---------------------------------------------------------
-# UPDATE THIS FILENAME to the file you want to read
-CSV_FILENAME = "optimization_results/best_gen_4.csv"
-# ---------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+TM_BASE_DIR = BASE_DIR.parent / "GA_SW_suppression_TM"
+OUTPUT_DIR = BASE_DIR / "optimization_results"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Simulation Constants
+LENGTH_DIR_PATTERN = re.compile(r"^(\d+)_(\d+)mm$")
+CSV_NAME_PATTERN = re.compile(r"^best_gen_(\d+)\.csv$")
+
 RESOLUTION = 20
 CELL_SIZE = mp.Vector3(30, 12, 0)
 PML_LAYERS = [mp.PML(1.0)]
 
-# Material Constants
 EPSILON_SUB = 10.2
 H_SUB = 1.27
 T_PEC = 0.035
 
-# Source / Frequency
 FCEN = 0.08
 DF = 0.05
 NFREQ = 100
 
-# Optimization Region (Must match the writer script)
 OPT_X_START = 0.0
-OPT_X_END = 10.0
 
 
-# =======================================================================
-# 2. HELPER: ROBUST CSV LOADER
-# =======================================================================
-
-def load_genome_from_csv(filename):
-    print(f"--- Loading genome from {filename} ---")
-    genome = None
-    historical_data = {'freq': [], 'T': [], 'R': [], 'L': []}
-
-    try:
-        with open(filename, 'r') as f:
-            reader = csv.reader(f)
-            parsing_data = False
-
-            for row in reader:
-                if not row: continue
-
-                # 1. Parse the Genome
-                # Looks for row: ["Genome", "[0, 1, 2...]"]
-                if row[0] == "Genome":
-                    # ast.literal_eval safely converts string string list to actual list
-                    try:
-                        genome = ast.literal_eval(row[1])
-                        print(f"Found Genome (Length {len(genome)}): {genome}")
-                    except:
-                        print("Error parsing genome string.")
-
-                # 2. Parse the Spectral Data (optional, for comparison)
-                if row[0] == "Frequency":
-                    parsing_data = True
-                    continue
-
-                if parsing_data and len(row) >= 4:
-                    try:
-                        historical_data['freq'].append(float(row[0]))
-                        historical_data['T'].append(float(row[1]))
-                        historical_data['R'].append(float(row[2]))
-                        historical_data['L'].append(float(row[3]))
-                    except ValueError:
-                        pass
-
-        if genome is None:
-            raise ValueError(f"Could not find a 'Genome' row in {filename}")
-
-        return genome, historical_data
-
-    except FileNotFoundError:
-        print(f"Error: The file '{filename}' was not found.")
-        exit()
+def parse_length_dir_name(dirname):
+    match = LENGTH_DIR_PATTERN.fullmatch(dirname)
+    if not match:
+        return None
+    return float(f"{match.group(1)}.{match.group(2)}")
 
 
-# =======================================================================
-# 3. GEOMETRY BUILDER
-# =======================================================================
+def format_length_label(length_mm):
+    return f"{length_mm:.1f}".replace(".", "_") + "mm"
+
+
+def parse_genome(text):
+    genome = ast.literal_eval(text)
+    if not isinstance(genome, list):
+        raise ValueError("Genome row did not contain a list.")
+    return [int(value) for value in genome]
+
+
+def discover_tm_lengths(base_dir):
+    records = []
+    for child in sorted(base_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        length_mm = parse_length_dir_name(child.name)
+        if length_mm is None:
+            continue
+        results_dirs = sorted(path for path in child.glob("optimization_results_*") if path.is_dir())
+        if not results_dirs:
+            continue
+        records.append((length_mm, child, results_dirs[0]))
+    return records
+
+
+def parse_tm_csv(csv_path):
+    metadata = {}
+    spectrum_rows = []
+    in_spectrum = False
+
+    with csv_path.open("r", newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            if not row:
+                continue
+            if row[:4] == ["Frequency", "T", "R", "L"]:
+                in_spectrum = True
+                continue
+            if in_spectrum:
+                if len(row) >= 4:
+                    spectrum_rows.append(row[:4])
+                continue
+            if len(row) >= 2:
+                metadata[row[0].strip()] = row[1].strip()
+
+    generation = int(float(metadata["Generation"]))
+    fitness = float(metadata["Best Fitness"])
+    genome = parse_genome(metadata["Genome"])
+    return {
+        "generation": generation,
+        "fitness": fitness,
+        "genome": genome,
+        "spectrum_rows": spectrum_rows,
+    }
+
+
+def find_newest_tm_csv(results_dir):
+    newest = None
+
+    for candidate in results_dir.glob("best_gen_*.csv"):
+        match = CSV_NAME_PATTERN.fullmatch(candidate.name)
+        if not match:
+            continue
+        generation_from_name = int(match.group(1))
+        parsed = parse_tm_csv(candidate)
+        sort_key = (parsed["generation"], generation_from_name, candidate.stat().st_mtime)
+        if newest is None or sort_key > newest["sort_key"]:
+            newest = {
+                "path": candidate,
+                "generation_from_name": generation_from_name,
+                "sort_key": sort_key,
+                **parsed,
+            }
+
+    return newest
+
+
+def parse_cached_te_metadata(csv_path):
+    metadata = {}
+    with csv_path.open("r", newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            if not row:
+                continue
+            if row[:4] == ["Frequency", "T", "R", "L"]:
+                break
+            if len(row) >= 2:
+                metadata[row[0].strip()] = row[1].strip()
+    return metadata
+
+
+def cached_result_is_current(output_csv, source_csv):
+    if not output_csv.exists():
+        return False
+
+    metadata = parse_cached_te_metadata(output_csv)
+    expected_mtime = f"{source_csv.stat().st_mtime:.6f}"
+
+    return (
+        metadata.get("Source TM CSV") == str(source_csv)
+        and metadata.get("Source TM MTime") == expected_mtime
+    )
+
 
 def get_base_geometry():
-    waveguide = mp.Block(mp.Vector3(mp.inf, H_SUB, mp.inf),
-                         center=mp.Vector3(0, H_SUB / 2, 0),
-                         material=mp.Medium(epsilon=EPSILON_SUB))
-
-    base_ground = mp.Block(mp.Vector3(mp.inf, T_PEC, mp.inf),
-                           center=mp.Vector3(0, -T_PEC / 2),
-                           material=mp.perfect_electric_conductor)
+    waveguide = mp.Block(
+        mp.Vector3(mp.inf, H_SUB, mp.inf),
+        center=mp.Vector3(0, H_SUB / 2, 0),
+        material=mp.Medium(epsilon=EPSILON_SUB),
+    )
+    base_ground = mp.Block(
+        mp.Vector3(mp.inf, T_PEC, mp.inf),
+        center=mp.Vector3(0, -T_PEC / 2, 0),
+        material=mp.perfect_electric_conductor,
+    )
     return [waveguide, base_ground]
 
 
-def get_optimization_geometry(genome):
+def get_optimization_geometry(genome, opt_x_end):
     geometry_additions = []
-
-    # Auto-calculate feature size based on genome length and region size
-    # This ensures it matches the original simulation regardless of specific constants
-    num_segments = len(genome)
-    region_length = OPT_X_END - OPT_X_START
-    feature_size = region_length / num_segments
-
-    # print(f"Reconstructing Geometry: Feature Size = {feature_size:.4f}")
-
+    feature_size = (opt_x_end - OPT_X_START) / len(genome)
     current_state = genome[0]
     segment_start_idx = 0
 
@@ -117,142 +166,173 @@ def get_optimization_geometry(genome):
         length = (end_idx - start_idx) * feature_size
         center_x = OPT_X_START + (start_idx * feature_size) + (length / 2)
 
-        # Logic for Cutting Ground (States 1 and 3)
-        if state == 1 or state == 3:
+        if state in (1, 3):
             geometry_additions.append(
-                mp.Block(mp.Vector3(length, T_PEC, mp.inf),
-                         center=mp.Vector3(center_x, -T_PEC / 2, 0),
-                         material=mp.Medium(epsilon=1.0)))
+                mp.Block(
+                    mp.Vector3(length, T_PEC, mp.inf),
+                    center=mp.Vector3(center_x, -T_PEC / 2, 0),
+                    material=mp.Medium(epsilon=1.0),
+                )
+            )
 
-        # Logic for Adding Top PEC (States 2 and 3)
-        if state == 2 or state == 3:
+        if state in (2, 3):
             geometry_additions.append(
-                mp.Block(mp.Vector3(length, T_PEC, mp.inf),
-                         center=mp.Vector3(center_x, H_SUB + T_PEC / 2, 0),
-                         material=mp.perfect_electric_conductor))
+                mp.Block(
+                    mp.Vector3(length, T_PEC, mp.inf),
+                    center=mp.Vector3(center_x, H_SUB + T_PEC / 2, 0),
+                    material=mp.perfect_electric_conductor,
+                )
+            )
 
-    for i in range(1, len(genome)):
-        if genome[i] != current_state:
-            add_block_from_state(current_state, segment_start_idx, i)
-            current_state = genome[i]
-            segment_start_idx = i
+    for index in range(1, len(genome)):
+        if genome[index] != current_state:
+            add_block_from_state(current_state, segment_start_idx, index)
+            current_state = genome[index]
+            segment_start_idx = index
     add_block_from_state(current_state, segment_start_idx, len(genome))
-
     return geometry_additions
 
 
-# =======================================================================
-# 4. SIMULATION EXECUTION
-# =======================================================================
+def run_te_simulation(genome, opt_x_end):
+    src_pt = mp.Vector3(-7.5, H_SUB / 2, 0)
+    refl_pt = mp.Vector3(-13, H_SUB / 2, 0)
+    trans_pt = mp.Vector3(13, H_SUB / 2, 0)
 
-# Load the Design
-loaded_genome, historical_data = load_genome_from_csv(CSV_FILENAME)
+    sources = [
+        mp.Source(
+            mp.GaussianSource(FCEN, fwidth=DF),
+            component=mp.Ez,
+            center=src_pt,
+            size=mp.Vector3(0, H_SUB, 0),
+        )
+    ]
 
-src_pt = mp.Vector3(-7.5, H_SUB / 2, 0)
-refl_pt = mp.Vector3(-13, H_SUB / 2, 0)
-trans_pt = mp.Vector3(13, H_SUB / 2, 0)
+    sim_norm = mp.Simulation(
+        cell_size=CELL_SIZE,
+        boundary_layers=PML_LAYERS,
+        geometry=get_base_geometry(),
+        sources=sources,
+        resolution=RESOLUTION,
+    )
 
-sources = [mp.Source(mp.GaussianSource(FCEN, fwidth=DF),
-                     component=mp.Ez,
-                     center=src_pt,
-                     size=mp.Vector3(0, H_SUB, 0))]
+    refl_mon = sim_norm.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=refl_pt, size=mp.Vector3(0, 4)))
+    trans_mon = sim_norm.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=trans_pt, size=mp.Vector3(0, 4)))
 
-# --- A. Normalization Run (Straight Waveguide) ---
-print("\n--- 1. Running Normalization (Baseline) ---")
-sim_norm = mp.Simulation(cell_size=CELL_SIZE,
-                         boundary_layers=PML_LAYERS,
-                         geometry=get_base_geometry(),
-                         sources=sources,
-                         resolution=RESOLUTION)
+    sim_norm.run(until_after_sources=mp.stop_when_energy_decayed(dt=50, decay_by=1e-9))
 
-refl_mon = sim_norm.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=refl_pt, size=mp.Vector3(0, 4)))
-trans_mon = sim_norm.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=trans_pt, size=mp.Vector3(0, 4)))
+    straight_refl_data = sim_norm.get_flux_data(refl_mon)
+    straight_trans_flux = np.array(mp.get_fluxes(trans_mon))
+    flux_freqs = np.array(mp.get_flux_freqs(trans_mon))
+    sim_norm.reset_meep()
 
-sim_norm.run(until_after_sources=mp.stop_when_energy_decayed(dt=50, decay_by=1e-9))
+    full_geometry = get_base_geometry() + get_optimization_geometry(genome, opt_x_end)
+    sim_opt = mp.Simulation(
+        cell_size=CELL_SIZE,
+        boundary_layers=PML_LAYERS,
+        geometry=full_geometry,
+        sources=sources,
+        resolution=RESOLUTION,
+    )
 
-straight_refl_data = sim_norm.get_flux_data(refl_mon)
-straight_trans_flux = np.array(mp.get_fluxes(trans_mon))
-flux_freqs = np.array(mp.get_flux_freqs(trans_mon))
+    refl = sim_opt.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=refl_pt, size=mp.Vector3(0, 4)))
+    trans = sim_opt.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=trans_pt, size=mp.Vector3(0, 4)))
+    sim_opt.load_minus_flux_data(refl, straight_refl_data)
+    sim_opt.run(until_after_sources=mp.stop_when_energy_decayed(dt=50, decay_by=1e-7))
 
-# --- B. Verification Run (Optimized Design) ---
-print("\n--- 2. Running Verification (Loaded Design) ---")
+    trans_flux = np.array(mp.get_fluxes(trans))
+    refl_flux = np.array(mp.get_fluxes(refl))
 
-# Rebuild full geometry
-full_geometry = get_base_geometry() + get_optimization_geometry(loaded_genome)
+    T = np.abs(
+        np.divide(trans_flux, straight_trans_flux, out=np.zeros_like(trans_flux), where=straight_trans_flux != 0)
+    )
+    R = np.abs(
+        np.divide(-refl_flux, straight_trans_flux, out=np.zeros_like(refl_flux), where=straight_trans_flux != 0)
+    )
+    L = 1 - T - R
+    fitness = float(np.mean(R))
 
-sim_opt = mp.Simulation(cell_size=CELL_SIZE,
-                        boundary_layers=PML_LAYERS,
-                        geometry=full_geometry,
-                        sources=sources,
-                        resolution=RESOLUTION)
+    sim_opt.reset_meep()
+    return flux_freqs, T, R, L, fitness
 
-refl = sim_opt.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=refl_pt, size=mp.Vector3(0, 4)))
-trans = sim_opt.add_flux(FCEN, DF, NFREQ, mp.FluxRegion(center=trans_pt, size=mp.Vector3(0, 4)))
 
-sim_opt.load_minus_flux_data(refl, straight_refl_data)
+def write_te_csv(output_csv, length_mm, source_record, flux_freqs, t_values, r_values, l_values, fitness):
+    with output_csv.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Parameter", "Value"])
+        writer.writerow(["Length (mm)", length_mm])
+        writer.writerow(["Generation", source_record["generation"]])
+        writer.writerow(["Best Fitness", fitness])
+        writer.writerow(["Genome", str(source_record["genome"])])
+        writer.writerow(["Source TM CSV", str(source_record["path"])])
+        writer.writerow(["Source TM Generation", source_record["generation"]])
+        writer.writerow(["Source TM Fitness", source_record["fitness"]])
+        writer.writerow(["Source TM MTime", f"{source_record['path'].stat().st_mtime:.6f}"])
+        writer.writerow([])
+        writer.writerow(["Frequency", "T", "R", "L"])
+        for freq, t_value, r_value, l_value in zip(flux_freqs, t_values, r_values, l_values):
+            writer.writerow([freq, t_value, r_value, l_value])
 
-# Setup Animation
-animate = mp.Animate2D(fields=mp.Ez,
-                       realtime=True,
-                       normalize=True,
-                       eps_parameters={'contour': True, 'alpha': 1.0})
 
-# Run Simulation
-sim_opt.run(mp.at_every(1, animate),
-            until_after_sources=mp.stop_when_energy_decayed(dt=50, decay_by=1e-7))
+def process_length(length_mm, results_dir):
+    source_record = find_newest_tm_csv(results_dir)
+    if source_record is None:
+        print(f"[SKIP] {results_dir.parent.name}: no TM best_gen CSV found")
+        return None
 
-# =======================================================================
-# 5. DATA PROCESSING & OUTPUT
-# =======================================================================
+    output_csv = OUTPUT_DIR / f"best_gen_{format_length_label(length_mm)}.csv"
 
-# Calculate S-Parameters
-trans_flux = np.array(mp.get_fluxes(trans))
-refl_flux = np.array(mp.get_fluxes(refl))
+    if cached_result_is_current(output_csv, source_record["path"]):
+        print(
+            f"[CACHE] {results_dir.parent.name}: using {output_csv.name} "
+            f"(TM generation {source_record['generation']})"
+        )
+        return {
+            "length_mm": length_mm,
+            "output_csv": output_csv,
+            "source_csv": source_record["path"],
+            "generation": source_record["generation"],
+            "cached": True,
+        }
 
-T = np.divide(trans_flux, straight_trans_flux, out=np.zeros_like(trans_flux), where=straight_trans_flux != 0)
-R = np.divide(-refl_flux, straight_trans_flux, out=np.zeros_like(refl_flux), where=straight_trans_flux != 0)
+    print(
+        f"[RUN] {results_dir.parent.name}: simulating TE from {source_record['path'].name} "
+        f"(TM generation {source_record['generation']})"
+    )
+    flux_freqs, t_values, r_values, l_values, fitness = run_te_simulation(source_record["genome"], length_mm)
+    write_te_csv(output_csv, length_mm, source_record, flux_freqs, t_values, r_values, l_values, fitness)
+    print(f"[SAVE] {output_csv.name}: mean(R)={fitness:.6f}")
 
-# Clip
-T = np.abs(T)
-R = np.abs(R)
-L = 1 - T - R
+    return {
+        "length_mm": length_mm,
+        "output_csv": output_csv,
+        "source_csv": source_record["path"],
+        "generation": source_record["generation"],
+        "cached": False,
+    }
 
-# Save Video
-print("\n--- Exporting Animation ---")
-anim_filename = CSV_FILENAME.replace(".csv", "_field.mp4")
-animate.to_mp4(10, anim_filename)
-print(f"Saved: {anim_filename}")
 
-# Plot Results
-print("\n--- Exporting Plot ---")
-plt.figure(figsize=(10, 6))
+def main():
+    tm_lengths = discover_tm_lengths(TM_BASE_DIR)
+    if not tm_lengths:
+        raise SystemExit(f"No TM length folders found in {TM_BASE_DIR}")
 
-# Plot Calculated Data (Solid Lines)
-plt.plot(flux_freqs, T, 'b-', linewidth=2, label='Transmission (Re-Sim)')
-plt.plot(flux_freqs, R, 'r-', linewidth=1.5, label='Reflection (Re-Sim)')
-plt.plot(flux_freqs, L, 'g-', linewidth=1.5, label='Loss (Re-Sim)')
+    summaries = []
+    for length_mm, _, results_dir in tm_lengths:
+        summary = process_length(length_mm, results_dir)
+        if summary is not None:
+            summaries.append(summary)
 
-# Plot Historical Data from CSV (Dashed Lines) - if available
-if len(historical_data['freq']) > 0:
-    plt.plot(historical_data['freq'], historical_data['T'], 'b--', alpha=0.5, label='CSV Data')
-    plt.plot(historical_data['freq'], historical_data['R'], 'r--', alpha=0.5)
+    if not summaries:
+        raise SystemExit("No TE CSV files were produced.")
 
-plt.xlabel("Frequency (Meep units)")
-plt.ylabel("Power Fraction")
-plt.title(f"Verification: {CSV_FILENAME}")
-plt.legend()
-plt.grid(True)
-plt.ylim(0, 1.1)
+    print("\nCompleted TE batch processing:")
+    for summary in summaries:
+        status = "cached" if summary["cached"] else "updated"
+        print(
+            f"  {summary['length_mm']:>4.1f} mm -> {summary['output_csv'].name} "
+            f"[{status}, source={summary['source_csv'].name}, gen={summary['generation']}]"
+        )
 
-plot_filename = CSV_FILENAME.replace(".csv", "_plot.png")
-plt.savefig(plot_filename)
-print(f"Saved: {plot_filename}")
 
-# Visualize Geometry Snapshot
-plt.figure(figsize=(10, 4))
-sim_opt.plot2D()
-plt.title("Reconstructed Geometry")
-plt.savefig(CSV_FILENAME.replace(".csv", "_geo.png"))
-print(f"Saved: {CSV_FILENAME.replace('.csv', '_geo.png')}")
-
-plt.show()
+if __name__ == "__main__":
+    main()

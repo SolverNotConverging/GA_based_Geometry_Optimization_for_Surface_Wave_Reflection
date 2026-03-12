@@ -36,7 +36,13 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # USER_GENOMES = [[1, 3, 3]]
 # USER_GENOMES = [[1, 3, 3], [3, 1, 3]]
 
-USER_GENOMES = [[2, 2, 2, 2, 2],
+USER_GENOMES = [[1, 1, 1, 1, 3],
+                [1, 1, 1, 3, 3],
+                [1, 1, 1, 2, 2],
+                [1, 1, 1, 2, 2],
+                [2, 2, 2, 2, 1],
+                [2, 2, 1, 1, 1],
+                [2, 2, 0, 1, 1],
                 ]
 
 
@@ -249,7 +255,7 @@ def calculate_fitness(genome):
     T = np.clip(T, 0, 1)
     R = np.clip(R, 0, 1)
     L = 1 - T - R
-    fitness = np.mean(R) + np.min(R)
+    fitness = np.mean(R)
 
     return fitness, T, R, L
 
